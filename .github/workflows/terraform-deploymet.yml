@@ -1,0 +1,141 @@
+name: "Terraform deployment"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+env:
+ # verbosity setting for Terraform logs
+ TF_LOG: INFO
+ # Credentials for deployment to AWS
+ AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+ AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+permissions:
+  id-token: write
+  actions: write
+  checks: write
+  contents: write
+  deployments: write
+  issues: write
+  packages: write
+  pages: write
+  pull-requests: write
+  repository-projects: write
+  security-events: write
+  statuses: write
+
+jobs:
+  terraform-prod-deployment:
+    name: "Terraform Deployment"
+    runs-on: ubuntu-latest
+    # if: github.ref != 'main'
+    env:
+      AWS_DEFAULT_REGION: "us-east-1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform with specified version on the runner
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.3.0
+
+      # Terraform steps
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Parse .tool-versions
+        id: versions
+        uses: marocchino/tool-versions-action@v1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ steps.versions.outputs.terraform }}
+
+      - name: Terraform Format
+        id: fmt-on-production
+        run: terraform fmt -check
+        continue-on-error: false
+
+      - name: Terraform Init
+        id: init-on-production
+        run: terraform init -backend-config=vars/production/production-backend-config.hcl
+
+      - name: Terraform Validate
+        id: validate-on-production
+        run: terraform validate -no-color
+
+      - name: tfsec validate
+        uses: aquasecurity/tfsec-sarif-action@v0.1.4
+        with:
+          sarif_file: tfsec.sarif
+
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: tfsec.sarif
+
+      - name: Terraform Plan
+        id: plan-on-production
+        if: github.event_name == 'pull_request'
+        run: |
+          terraform plan -var-file=./vars/production/production.tfvars -no-color -out=plan.tmp
+          terraform show -no-color plan.tmp > ${GITHUB_WORKSPACE}/plan.out
+        continue-on-error: true
+
+      - name: Attach plan to PR
+        id: attach-plan-on-production
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const run_url = process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY + '/actions/runs/' + process.env.GITHUB_RUN_ID
+            const run_link = '<a href="' + run_url + '">Actions</a>.'
+            const fs = require('fs')
+            const plan_file = fs.readFileSync('plan.out', 'utf8')
+            const plan = plan_file.length > 65000 ? plan_file.toString().substring(0, 65000) + " ..." : plan_file
+            const truncated_message = plan_file.length > 65000 ? "Output is too long and was truncated. You can read full Plan in " + run_link + "<br /><br />" : ""
+            const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt-on-production.outcome }}\`
+            #### Terraform Initialization ⚙️\`${{ steps.init-on-production.outcome }}\`
+            #### Terraform Validation 🤖\`${{ steps.validate-on-production.outcome }}\`
+            #### Terraform Plan 📖\`${{ steps.plan-on-production.outcome }}\`
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`\n
+            ${plan}
+            \`\`\`
+
+            </details>
+            ${truncated_message}
+
+            *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      - name: Terraform Plan Status
+        if: steps.plan-on-production.outcome == 'failure'
+        run: exit 1
+
+      - name: Terraform Apply
+        id: terraform-apply-on-production
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: terraform apply -var-file=./vars/production/production.tfvars -auto-approve
+
