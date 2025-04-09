@@ -2,82 +2,44 @@ provider "aws" {
   region = var.region
 }
 
-data "aws_availability_zones" "available" {}
-
-resource "aws_vpc" "main" {
-  cidr_block = "10.0.0.0/16"
-
-  tags = {
-    Name = "main-vpc-eks"
-  }
-}
-
-resource "aws_subnet" "public_subnet" {
-  count                   = 2
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)
-  availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name = "public-subnet-${count.index}"
-  }
-}
-
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
-
-  tags = {
-    Name = "main-igw"
-  }
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
-  }
-
-  tags = {
-    Name = "main-route-table"
-  }
-}
-
-resource "aws_route_table_association" "a" {
-  count          = 2
-  subnet_id      = aws_subnet.public_subnet.*.id[count.index]
-  route_table_id = aws_route_table.public.id
-}
-
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "20.35.0"
 
-  cluster_name    = "pratice"
+  cluster_name    = var.cluster_name
   cluster_version = "1.31"
 
-  # Optional
-  cluster_endpoint_public_access = true
-
-  # Optional: Adds the current caller identity as an administrator via cluster access entry
   enable_cluster_creator_admin_permissions = true
+  cluster_endpoint_public_access           = true
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.public_subnets
 
   eks_managed_node_groups = {
-    example = {
+    default = {
       instance_types = ["t2.micro"]
-      min_size       = 1
-      max_size       = 2
       desired_size   = 1
+      min_size       = 1
+      max_size       = 3
     }
   }
+}
 
-  vpc_id     = aws_vpc.main.id
-  subnet_ids = aws_subnet.public_subnet.*.id
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.8.1"
+
+  name = "eks-vpc"
+  cidr = "10.0.0.0/16"
+
+  azs            = ["us-east-1a", "us-east-1b"]
+  public_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
+
+  enable_dns_hostnames = true
+  enable_dns_support   = true
 
   tags = {
-    Environment = "dev"
     Terraform   = "true"
+    Environment = "dev"
   }
 }
