@@ -6,17 +6,6 @@ Infrastructure provisioning using shell scripts
 Multi-node cluster setup
 Modular and reusable workflow components
 
-📁 **Repository Structure**
-K8s_Cluster/
-├── .github/
-│   └── workflows/
-│       └── main.yml         # GitHub Actions workflow for cluster deployment
-├── scripts/
-│   ├── install_k8s.sh       # Script to install Kubernetes components
-│   ├── setup_master.sh      # Script to configure the master node
-│   └── setup_worker.sh      # Script to configure worker nodes
-└── README.md                # Project documentation
-
 🛠️ **Prerequisites**
 GitHub account with repository access
 GitHub Actions enabled
